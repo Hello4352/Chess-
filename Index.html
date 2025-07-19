@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<title>사람 vs AI 체스</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    background: #f0f0f0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin: 0; padding: 20px;
+  }
+  #board {
+    display: grid;
+    grid-template-columns: repeat(8, 60px);
+    grid-template-rows: repeat(8, 60px);
+    gap: 0;
+    border: 2px solid #333;
+  }
+  .cell {
+    width: 60px;
+    height: 60px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 36px;
+    user-select: none;
+    cursor: pointer;
+  }
+  .white {
+    background-color: #eee;
+  }
+  .black {
+    background-color: #666;
+    color: white;
+  }
+  .highlight {
+    outline: 3px solid yellow;
+  }
+  #status {
+    margin-top: 10px;
+    font-weight: bold;
+  }
+</style>
+</head>
+<body>
+  <h1>사람 vs AI 체스</h1>
+  <div id="board"></div>
+  <div id="status"></div>
+<script>
+const boardEl=document.getElementById('board');
+const statusEl=document.getElementById('status');
+let selected=null;
+let highlights=[];
+let turn='w';
+let enPassantTarget=null;
+let halfMoveClock=0;
+let fullMoveNumber=1;
+let castlingRights={wK:true,wQ:true,bK:true,bQ:true};
+const pieceUnicode={wK:'♔',wQ:'♕',wR:'♖',wB:'♗',wN:'♘',wP:'♙',bK:'♚',bQ:'♛',bR:'♜',bB:'♝',bN:'♞',bP:'♟'};
+let gameState=[['bR','bN','bB','bQ','bK','bB','bN','bR'],['bP','bP','bP','bP','bP','bP','bP','bP'],['','','','','','','',''],['','','','','','','',''],['','','','','','','',''],['','','','','','','',''],['wP','wP','wP','wP','wP','wP','wP','wP'],['wR','wN','wB','wQ','wK','wB','wN','wR']];
+function renderBoard(){
+  boardEl.innerHTML='';
+  for(let r=0;r<8;r++){
+    for(let c=0;c<8;c++){
+      const cell=document.createElement('div');
+      cell.classList.add('cell');
+      cell.classList.add((r+c)%2===0?'white':'black');
+      if(highlights.some(pos=>pos[0]===r&&pos[1]===c))cell.classList.add('highlight');
+      const piece=gameState[r][c];
+      cell.textContent=piece?pieceUnicode[piece]:'';
+      cell.dataset.row=r;
+      cell.dataset.col=c;
+      cell.onclick=()=>handleClick(r,c);
+      boardEl.appendChild(cell);
+    }
+  }
+  updateStatus();
+}
+function updateStatus(){
+  if(isCheckmate(turn))statusEl.textContent=(turn==='w'?'흑':'백')+' 승리! 체크메이트 되었습니다.';
+  else if(isStalemate(turn))statusEl.textContent='스테일메이트 (무승부)';
+  else if(isInCheck(turn))statusEl.textContent=(turn==='w'?'백':'흑')+' 차례입니다. 체크 상태!';
+  else statusEl.textContent=(turn==='w'?'백':'흑')+' 차례입니다.';
+}
+function handleClick(r,c){
+  const piece=gameState[r][c];
+  if(selected){
+    if(highlights.some(pos=>pos[0]===r&&pos[1]===c)){
+      makeMove(selected,[r,c]);
+      selected=null;
+      highlights=[];
+      renderBoard();
+      if(turn==='b')setTimeout(aiMove,300);
+    }else if(piece&&piece[0]===turn){
+      selected=[r,c];
+      highlights=generateLegalMoves(r,c);
+      renderBoard();
+    }else{
+      selected=null;
+      highlights=[];
+      renderBoard();
+    }
+  }else if(piece&&piece[0]===turn){
+    selected=[r,c];
+    highlights=generateLegalMoves(r,c);
+    renderBoard();
+  }
+}
+function makeMove(from,to){
+  const [fr,fc]=from;
+  const [tr,tc]=to;
+  const piece=gameState[fr][fc];
+  const target=gameState[tr][tc];
+  if(piece[1]==='P'&&enPassantTarget&&tr===enPassantTarget[0]&&tc===enPassantTarget[1]){
+    if(turn==='w')gameState[tr+1][tc]='';
+    else gameState[tr-1][tc]='';
+  }
+  if(piece[1]==='K'){
+    if(turn==='w'){castlingRights.wK=false;castlingRights.wQ=false;}
+    else{castlingRights.bK=false;castlingRights.bQ=false;}
+  }
+  if(piece[1]==='R'){
+    if(fr===7&&fc===0)castlingRights.wQ=false;
+    if(fr===7&&fc===7)castlingRights.wK=false;
+    if(fr===0&&fc===0)castlingRights.bQ=false;
+    if(fr===0&&fc===7)castlingRights.bK=false;
+  }
+  if(piece[1]==='K'&&Math.abs(tc-fc)===2){
+    if(tc===6){gameState[tr][5]=gameState[tr][7];gameState[tr][7]='';}
+    else if(tc===2){gameState[tr][3]=gameState[tr][0];gameState[tr][0]='';}
+  }
+  gameState[tr][tc]=piece;
+  gameState[fr][fc]='';
+  if(piece[1]==='P'&&(tr===0||tr===7))gameState[tr][tc]=piece[0]+'Q';
+  if(piece[1]==='P'&&Math.abs(tr-fr)===2)enPassantTarget=[(fr+tr)/2,fc];
+  else enPassantTarget=null;
+  if(piece[1]==='P'||target!=='')halfMoveClock=0;
+  else halfMoveClock++;
+  turn=turn==='w'?'b':'w';
+  if(turn==='w')fullMoveNumber++;
+  if(turn==='b')evaluatePlayerMove(from,to);
+}
+function generateLegalMoves(r,c){
+  const piece=gameState[r][c];
+  if(!piece)return[];
+  const candidateMoves=generateMoves(r,c);
+  const legalMoves=[];
+  for(const move of candidateMoves){
+    if(!wouldBeInCheckAfterMove([r,c],move,piece[0]))legalMoves.push(move);
+  }
+  return legalMoves;
+}
+function generateMoves(r,c){
+  const piece=gameState[r][c];
+  const color=piece[0];
+  const type=piece[1];
+  const moves=[];
+  const opponent=color==='w'?'b':'w';
+  function isEmpty(rr,cc){return rr>=0&&rr<8&&cc>=0&&cc<8&&gameState[rr][cc]==='';}
+  function isEnemy(rr,cc){return rr>=0&&rr<8&&cc>=0&&cc<8&&gameState[rr][cc]&&gameState[rr][cc][0]===opponent;}
+  if(type==='P'){
+    const dir=color==='w'?-1:1;
+    if(isEmpty(r+dir,c))moves.push([r+dir,c]);
+    if((color==='w'&&r===6||color==='b'&&r===1)&&isEmpty(r+dir,c)&&isEmpty(r+2*dir,c))moves.push([r+2*dir,c]);
+    if(isEnemy(r+dir,c-1))moves.push([r+dir,c-1]);
+    if(isEnemy(r+dir,c+1))moves.push([r+dir,c+1]);
+    if(enPassantTarget){
+      if(r+dir===enPassantTarget[0]&&Math.abs(c-enPassantTarget[1])===1)moves.push(enPassantTarget);
+    }
+  }else if(type==='N'){
+    const knightMoves=[[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]];
+    for(const[dr,dc]of knightMoves){
+      const nr=r+dr,nc=c+dc;
+      if(nr>=0&&nr<8&&nc>=0&&nc<8){
+        if(gameState[nr][nc]===''||gameState[nr][nc][0]===opponent)moves.push([nr,nc]);
+      }
+    }
+  }else if(type==='B'||type==='R'||type==='Q'){
+    const directions=[];
+    if(type==='B'||type==='Q')directions.push([-1,-1],[-1,1],[1,-1],[1,1]);
+    if(type==='R'||type==='Q')directions.push([-1,0],[1,0],[0,-1],[0,1]);
+    for(const[dr,dc]of directions){
+      let nr=r+dr,nc=c+dc;
+      while(nr>=0&&nr<8&&nc>=0&&nc<8){
+        if(gameState[nr][nc]===''){
+          moves.push([nr,nc]);
+        }else{
+          if(gameState[nr][nc][0]===opponent)moves.push([nr,nc]);
+          break;
+        }
+        nr+=dr;nc+=dc;
+      }
+    }
+  }else if(type==='K'){
+    for(let dr=-1;dr<=1;dr++){
+      for(let dc=-1;dc<=1;dc++){
+        if(dr===0&&dc===0)continue;
+        let nr=r+dr,nc=c+dc;
+        if(nr>=0&&nr<8&&nc>=0&&nc<8){
+          if(gameState[nr][nc]===''||gameState[nr][nc][0]===opponent)moves.push([nr,nc]);
+        }
+      }
+    }
+    if(turn==='w'&&castlingRights.wK&&!isInCheck('w')&&
+      gameState[7][5]===''&&gameState[7][6]===''&&!wouldBeInCheckAfterMove([7,4],[7,5],'w')&&!wouldBeInCheckAfterMove([7,4],[7,6],'w'))moves.push([7,6]);
+    if(turn==='w'&&castlingRights.wQ&&!isInCheck('w')&&
+      gameState[7][3]===''&&gameState[7][2]===''&&gameState[7][1]===''&&!wouldBeInCheckAfterMove([7,4],[7,3],'w')&&!wouldBeInCheckAfterMove([7,4],[7,2],'w'))moves.push([7,2]);
+    if(turn==='b'&&castlingRights.bK&&!isInCheck('b')&&
+      gameState[0][5]===''&&gameState[0][6]===''&&!wouldBeInCheckAfterMove([0,4],[0,5],'b')&&!wouldBeInCheckAfterMove([0,4],[0,6],'b'))moves.push([0,6]);
+    if(turn==='b'&&castlingRights.bQ&&!isInCheck('b')&&
+      gameState[0][3]===''&&gameState[0][2]===''&&gameState[0][1]===''&&!wouldBeInCheckAfterMove([0,4],[0,3],'b')&&!wouldBeInCheckAfterMove([0,4],[0,2],'b'))moves.push([0,2]);
+  }
+  return moves;
+}
+function wouldBeInCheckAfterMove(from,to,color){
+  const [fr,fc]=from;
+  const [tr,tc]=to;
+  const originalFrom=gameState[fr][fc];
+  const originalTo=gameState[tr][tc];
+  gameState[tr][tc]=originalFrom;
+  gameState[fr][fc]='';
+  const inCheck=isInCheck(color);
+  gameState[fr][fc]=originalFrom;
+  gameState[tr][tc]=originalTo;
+  return inCheck;
+}
+function isInCheck(color){
+  let kingPos=null;
+  for(let r=0;r<8;r++){
+    for(let c=0;c<8;c++){
+      if(gameState[r][c]===color+'K'){
+        kingPos=[r,c];
+        break;
+      }
+    }
+  }
+  if(!kingPos)return false;
+  const opponent=color==='w'?'b':'w';
+  for(let r=0;r<8;r++){
+    for(let c=0;c<8;c++){
+      if(gameState[r][c]&&gameState[r][c][0]===opponent){
+        const moves=generateMoves(r,c);
+        if(moves.some(m=>m[0]===kingPos[0]&&m[1]===kingPos[1]))return true;
+      }
+    }
+  }
+  return false;
+}
+function hasAnyLegalMove(color){
+  for(let r=0;r<8;r++){
+    for(let c=0;c<8;c++){
+      if(gameState[r][c]&&gameState[r][c][0]===color){
+        if(generateLegalMoves(r,c).length>0)return true;
+      }
+    }
+  }
+  return false;
+}
+function isCheckmate(color){
+  return isInCheck(color)&&!hasAnyLegalMove(color);
+}
+function isStalemate(color){
+  return !isInCheck(color)&&!hasAnyLegalMove(color);
+}
+function aiMove(){
+  let bestScore=-Infinity;
+  let bestMove=null;
+  for(let r=0;r<8;r++){
+    for(let c=0;c<8;c++){
+      if(gameState[r][c]&&gameState[r][c][0]==='b'){
+        const moves=generateLegalMoves(r,c);
+        for(const m of moves){
+          const from=[r,c];
+          const to=m;
+          const backupFrom=gameState[from[0]][from[1]];
+          const backupTo=gameState[to[0]][to[1]];
+          gameState[to[0]][to[1]]=backupFrom;
+          gameState[from[0]][from[1]]='';
+          const score=evaluateBoard();
+          gameState[from[0]][from[1]]=backupFrom;
+          gameState[to[0]][to[1]]=backupTo;
+          if(score>bestScore){bestScore=score;bestMove=[from,to];}
+        }
+      }
+    }
+  }
+  if(bestMove){
+    makeMove(bestMove[0],bestMove[1]);
+    renderBoard();
+  }
+}
+function evaluateBoard(){
+  const values={P:1,N:3,B:3,R:5,Q:9,K:100};
+  let score=0;
+  for(const row of gameState){
+    for(const piece of row){
+      if(piece){
+        const val=values[piece[1]]||0;
+        score+=piece[0]==='b'?val:-val;
+      }
+    }
+  }
+  return score;
+}
+let stockfish;
+if(typeof Worker!=='undefined'){
+  stockfish=new Worker('https://cdn.jsdelivr.net/npm/stockfish@14.1.0/src/stockfish.js');
+}
+function evaluateMoveWithEngine(fen,move,callback){
+  if(!stockfish)return;
+  let evaluation=null;
+  let receivedBestMove=false;
+  stockfish.postMessage('uci');
+  stockfish.postMessage('ucinewgame');
+  stockfish.postMessage('position fen '+fen);
+  stockfish.postMessage('go depth 10');
+  stockfish.onmessage=function(event){
+    const line=event.data;
+    if(line.startsWith('info depth')){
+      const match=line.match(/score cp (-?\\d+)/);
+      if(match)evaluation=parseInt(match[1]);
+    }else if(line.startsWith('bestmove')){
+      receivedBestMove=true;
+      if(callback&&evaluation!==null)callback(evaluation);
+    }
+  };
+}
+function gameToFEN(){
+  let fen='';
+  for(let y=0;y<8;y++){
+    let empty=0;
+    for(let x=0;x<8;x++){
+      const piece=gameState[y][x];
+      if(piece==='')empty++;
+      else{
+        if(empty>0){fen+=empty;empty=0;}
+        fen+=getFENChar(piece);
+      }
+    }
+    if(empty>0)fen+=empty;
+    if(y!==7)fen+='/';
+  }
+  fen+=(turn==='w'?' w ':' b ');
+  fen+='- - 0 1';
+  return fen;
+}
+function getFENChar(piece){
+  const map={'wP':'P','wR':'R','wN':'N','wB':'B','wQ':'Q','wK':'K','bP':'p','bR':'r','bN':'n','bB':'b','bQ':'q','bK':'k'};
+  return map[piece]||'';
+}
+function evaluatePlayerMove(from,to){
+  const fen=gameToFEN();
+  evaluateMoveWithEngine(fen,{from,to},score=>{
+    const msg=score>100?'좋은 수입니다!':score<-100?'별로 좋지 않은 수예요.':'무난한 수예요.';
+    alert(`AI 평가: ${msg} (점수: ${score})`);
+  });
+}
+renderBoard();
+</script>
+</body>
+</html>
